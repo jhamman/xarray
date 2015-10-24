@@ -145,7 +145,7 @@ class PyTest(Command):
 
     def run(self):
         import subprocess
-        errno = subprocess.call(['py.test'])
+        errno = subprocess.call(['py.test', 'xray'])
         raise SystemExit(errno)
 
 
