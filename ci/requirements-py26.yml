@@ -3,7 +3,7 @@ dependencies:
   - python=2.6.9
   - cython=0.22.1
   - h5py=2.5.0
-  - nose
+  - pytest
   - ordereddict
   - numpy=1.9.2
   - pandas=0.16.2
@@ -13,6 +13,7 @@ dependencies:
   - unittest2
   - pip:
     - coveralls
+    - pytest-cov
     - cyordereddict
     - dask
     - h5netcdf
