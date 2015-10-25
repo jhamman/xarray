@@ -30,6 +30,8 @@ matrix:
     env: CONDA_ENV=py35-dask-dev
   - python: 3.5
     env: CONDA_ENV=py35-pandas-dev
+  - python: 3.5
+    env: CONDA_ENV=py35-matplotlib-dev
   allow_failures:
   - python: 2.7
     env: CONDA_ENV=py27-pydap
@@ -44,6 +46,8 @@ matrix:
     env: CONDA_ENV=py35-dask-dev
   - python: 3.5
     env: CONDA_ENV=py35-pandas-dev
+  - python: 3.5
+    env: CONDA_ENV=py35-matplotlib-dev
 
 before_install:
   - if [[ "$TRAVIS_PYTHON_VERSION" == "2.7" ]]; then
