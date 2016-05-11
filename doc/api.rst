@@ -442,3 +442,24 @@ Plotting
    plot.line
    plot.pcolormesh
    plot.FacetGrid
+
+
+   Testing
+   =======
+
+.. autosummary::
+   :toctree: generated/
+
+   testing.assert_variable_equal
+   testing.assert_variable_identical
+   testing.assert_variable_all_close
+   testing.assert_variable_not_equal
+   testing.assert_array_equal
+   testing.assert_equal
+   testing.assert_ataset_equal
+   testing.assert_dataset_identical
+   testing.assert_dataset_all_close
+   testing.assert_coordinates_equal
+   testing.assert_data_array_equal
+   testing.assert_data_array_identical
+   testing.assert_data_array_all_close
