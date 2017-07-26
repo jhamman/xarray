@@ -87,7 +87,7 @@ __all__ = """logaddexp logaddexp2 conj exp log log2 log10 log1p expm1 sqrt
              logical_or logical_xor logical_not maximum minimum fmax fmin
              isreal iscomplex isfinite isinf isnan signbit copysign nextafter
              ldexp fmod floor ceil trunc degrees radians rint fix angle real
-             imag fabs sign frexp fmod
+             imag fabs sign frexp fmod add subtract
              """.split()
 
 for name in __all__:

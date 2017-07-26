@@ -256,11 +256,12 @@ class FacetGrid(object):
 
         return self
 
-    def _finalize_grid(self, *axlabels):
+    def _finalize_grid(self, *axlabels, tight_layout=True):
         """Finalize the annotations and layout."""
         self.set_axis_labels(*axlabels)
         self.set_titles()
-        self.fig.tight_layout()
+        if tight_layout:
+            self.fig.tight_layout()
 
         for ax, namedict in zip(self.axes.flat, self.name_dicts.flat):
             if namedict is None:
@@ -423,3 +424,269 @@ class FacetGrid(object):
         self._finalize_grid(*args[:2])
 
         return self
+
+
+class LRFacetGrid(FacetGrid):
+    """
+    Initialize the matplotlib figure and LRFacetGrid object.
+
+    The :class:`LRFacetGrid` is an object that links a xarray DataArray to
+    a matplotlib figure with a particular structure.
+
+    In particular, :class:`LRFacetGrid` is used to draw plots with multiple
+    Axes where each Axes shows the same relationship conditioned on
+    different levels of some dimension. It's possible to condition on up to
+    two variables by assigning variables to the rows and columns of the
+    grid.
+
+    The general approach to plotting here is called "small multiples",
+    where the same kind of plot is repeated multiple times, and the
+    specific use of small multiples to display the same relationship
+    conditioned on one ore more other variables is often called a "trellis
+    plot".
+
+    The basic workflow is to initialize the :class:`LRFacetGrid` object with
+    the DataArray and the variable names that are used to structure the grid.
+    Then plotting functions can be applied to each subset by calling
+    :meth:`LRFacetGrid.map_dataarray` or :meth:`LRFacetGrid.map`.
+
+    Attributes
+    ----------
+    axes : numpy object array
+        Contains axes in corresponding position, as returned from
+        plt.subplots
+    fig : matplotlib.Figure
+        The figure containing all the axes
+    name_dicts : numpy object array
+        Contains dictionaries mapping coordinate names to values. None is
+        used as a sentinel value for axes which should remain empty, ie.
+        sometimes the bottom right grid
+
+    """
+
+    def __init__(self, left, right, col=None, row=None,
+                 sharex=True, sharey=True, figsize=None, aspect=1, size=3,
+                 subplot_kws=None, diff_func=None):
+        """
+        Parameters
+        ----------
+        left : DataArray
+            xarray DataArray to be plotted
+        right : DataArray
+            xarray DataArray to be plotted
+        row, col : strings
+            Dimesion names that define subsets of the data, which will be drawn
+            on separate facets in the grid.
+        sharex : bool, optional
+            If true, the facets will share x axes
+        sharey : bool, optional
+            If true, the facets will share y axes
+        figsize : tuple, optional
+            A tuple (width, height) of the figure in inches.
+            If set, overrides ``size`` and ``aspect``.
+        aspect : scalar, optional
+            Aspect ratio of each facet, so that ``aspect * size`` gives the
+            width of each facet in inches
+        size : scalar, optional
+            Height (in inches) of each facet. See also: ``aspect``
+        subplot_kws : dict, optional
+            Dictionary of keyword arguments for matplotlib subplots
+        """
+
+        import matplotlib.pyplot as plt
+
+        # Handle corner case of nonunique coordinates
+        for data in [left, right]:
+            for key in [row, col]:
+                if key in data:
+                    rep = key is not None and not data[key].to_index().is_unique
+                    if rep:
+                        raise ValueError(
+                            'Coordinates used for faceting cannot '
+                            'contain repeated (nonunique) values.')
+
+        # single_group is the grouping variable, if there is exactly one
+        group_cols = {}
+        if col and row:
+            single_group = False
+            nrow = len(left[row])
+        elif row and not col:
+            single_group = True
+            nrow = len(left[row])
+        elif not row and col:
+            single_group = True
+            nrow = 1
+        else:
+            raise ValueError(
+                'Pass a coordinate name as an argument for row or col')
+        if col:
+            ncol = 0
+            for data, group in zip([left, right], ['left', 'right']):
+                try:
+                    group_cols[group] = len(data[col])
+                    ncol += group_cols[group]
+                except KeyError:
+                    group_cols[group] = 1
+                    ncol += 1
+        else:
+            group_cols = 2
+
+        left_slice = slice(0, group_cols['left'])
+        right_slice = slice(group_cols['left'], None)
+
+        # Set the subplot kwargs
+        subplot_kws = {} if subplot_kws is None else subplot_kws
+
+        if figsize is None:
+            # Calculate the base figure size with extra horizontal space for a
+            # colorbar
+            cbar_space = 1
+            figsize = (ncol * size * aspect + 2 * cbar_space, nrow * size)
+
+        fig, axes = plt.subplots(nrow, ncol,
+                                 sharex=sharex, sharey=sharey, squeeze=False,
+                                 figsize=figsize, subplot_kw=subplot_kws)
+
+        # Set up the lists of names for the row and column facet variables
+        name_dicts = np.empty(shape=(nrow, ncol), dtype=object)
+
+        row_names = list(left[row].values) if row else []
+        col_names = []
+
+        offset = 0
+        for data, group in zip([left, right], ['left', 'right']):
+            if col in data:
+
+                group_col_names = list(data[col].values)
+            else:
+                group_col_names = [data.name]
+            col_names.extend(group_col_names)
+
+            for i, row_name in enumerate(row_names):
+                for j, col_name in enumerate(group_col_names):
+                    ind = (i, j + offset)
+                    name_dicts[ind] = {}
+                    if col in data:
+                        name_dicts[ind][col] = col_name
+                    if row in data:
+                        name_dicts[ind][row] = row_name
+            offset += group_cols[group]
+
+        # Set up the class attributes
+        # ---------------------------
+
+        # First the public API
+        self.data = [left, right]
+        self.name_dicts = name_dicts
+        self.fig = fig
+        self.axes = axes
+        self.group_axes = {'left': axes[:, left_slice],
+                           'right': axes[:, right_slice]}
+        self.row_names = row_names
+        self.col_names = col_names
+        self.cbars = {}
+
+        # Next the private variables
+        self._single_group = single_group
+        self._nrow = nrow
+        self._row_var = row
+        self._ncol = ncol
+        self._group_cols = group_cols
+        self._col_var = col
+        self._x_var = None
+        self._y_var = None
+        self._cmap_extend = None
+        self._mappables = []
+        self._col_slices = {'left': left_slice, 'right': right_slice}
+
+    def map_dataarray(self, func, x, y, lr_kwargs={}, **kwargs):
+        """
+        Apply a plotting function to a 2d facet's subset of the data.
+
+        This is more convenient and less general than ``FacetGrid.map``
+
+        Parameters
+        ----------
+        func : callable
+            A plotting function with the same signature as a 2d xarray
+            plotting method such as `xarray.plot.imshow`
+        x, y : string
+            Names of the coordinates to plot on x, y axes
+        lr_kwargs : dict
+            keyword arguments to func for left and right parts of the grid
+            must have keys 'left' and 'right'
+        kwargs :
+            additional keyword arguments to func
+
+        Returns
+        -------
+        self : FacetGrid object
+
+        """
+
+        for data, group in zip(self.data, ['left', 'right']):
+            axes = self.axes[:, self._col_slices[group]]
+
+            # These should be consistent with xarray.plot._plot2d
+            cmap_kwargs = {'plot_data': data.values,
+                           # MPL default
+                           'levels': 7 if 'contour' in func.__name__ else None,
+                           'filled': func.__name__ != 'contour',
+                           }
+
+            group_kwargs = kwargs.copy()
+            group_kwargs.update(lr_kwargs.get(group, {}))
+
+            cmap_args = inspect.getargspec(_determine_cmap_params).args
+            cmap_kwargs.update(
+                (a, group_kwargs[a]) for a in cmap_args if a in group_kwargs)
+
+            cmap_params = _determine_cmap_params(**cmap_kwargs)
+
+            # Order is important
+            func_kwargs = group_kwargs.copy()
+            func_kwargs.update(cmap_params)
+            func_kwargs.update({'add_colorbar': False, 'add_labels': False})
+
+            # Get x, y labels for the first subplot
+            x, y = _infer_xy_labels(darray=data.loc[self.name_dicts.flat[0]],
+                                    x=x, y=y)
+            for d, ax in zip(self.name_dicts[:, self._col_slices[group]].flat,
+                             axes.flat):
+                # None is the sentinel value
+                if d is not None:
+                    subset = data.loc[d]
+                    mappable = func(subset, x, y, ax=ax, **func_kwargs)
+                    self._mappables.append(mappable)
+
+            self._cmap_extend = cmap_params.get('extend')
+            self._finalize_grid(x, y, tight_layout=False)
+
+            if group_kwargs.get('add_colorbar', True):
+                self.cbars[group] = self.add_colorbar(data=data, axes=axes)
+
+        return self
+
+    def add_colorbar(self, **kwargs):
+        """Draw a colorbar
+        """
+
+        axes = kwargs.pop('axes')
+        data = kwargs.pop('data')
+
+        kwargs = kwargs.copy()
+        if self._cmap_extend is not None:
+            kwargs.setdefault('extend', self._cmap_extend)
+        if getattr(data, 'name', None) is not None:
+            kwargs.setdefault('label', data.name)
+        return self.fig.colorbar(self._mappables[-1],
+                                 ax=list(axes.flat), fraction=.25, aspect=25)
+
+    def move_right_group(self, dist=0.01):
+        for ax in self.group_axes['right'].flat:
+            pos1 = ax.get_position()  # get the original position
+            pos2 = [pos1.x0 + dist, pos1.y0, pos1.width, pos1.height]
+            ax.set_position(pos2)  # set a new position
+
+    def map(self, func, *args, **kwargs):
+        NotImplementedError()
