@@ -178,6 +178,7 @@ class FacetGrid(object):
         self.axes = axes
         self.row_names = row_names
         self.col_names = col_names
+        self.title_template = "{coord} = {value}"
 
         # Next the private variables
         self._single_group = single_group
@@ -306,7 +307,7 @@ class FacetGrid(object):
             ax.set_ylabel(label, **kwargs)
         return self
 
-    def set_titles(self, template="{coord} = {value}", maxchar=30,
+    def set_titles(self, template=None, maxchar=30,
                    **kwargs):
         """
         Draw titles either above each facet or on the grid margins.
@@ -329,6 +330,9 @@ class FacetGrid(object):
 
         kwargs["size"] = kwargs.pop("size", mpl.rcParams["axes.labelsize"])
 
+        if template is None:
+            template = self.title_template
+
         nicetitle = functools.partial(_nicetitle, maxchar=maxchar,
                                       template=template)
 
@@ -336,7 +340,10 @@ class FacetGrid(object):
             for d, ax in zip(self.name_dicts.flat, self.axes.flat):
                 # Only label the ones with data
                 if d is not None:
-                    coord, value = list(d.items()).pop()
+                    try:
+                        coord, value = list(d.items()).pop()
+                    except IndexError:
+                        continue
                     title = nicetitle(coord, value, maxchar=maxchar)
                     ax.set_title(title, **kwargs)
         else:
@@ -495,24 +502,24 @@ class LRFacetGrid(FacetGrid):
 
         import matplotlib.pyplot as plt
 
-        # Handle corner case of nonunique coordinates
-        for data in [left, right]:
-            for key in [row, col]:
-                if key in data:
-                    rep = key is not None and not data[key].to_index().is_unique
-                    if rep:
-                        raise ValueError(
-                            'Coordinates used for faceting cannot '
-                            'contain repeated (nonunique) values.')
+        # # Handle corner case of nonunique coordinates
+        # for data in [left, right]:
+        #     for key in [row, col]:
+        #         if key in data:
+        #             rep = key is not None and not data[key].to_index().is_unique
+        #             if rep:
+        #                 raise ValueError(
+        #                     'Coordinates used for faceting cannot '
+        #                     'contain repeated (nonunique) values.')
 
         # single_group is the grouping variable, if there is exactly one
         group_cols = {}
         if col and row:
             single_group = False
-            nrow = len(left[row])
+            nrow = _safe_len(left[row], right[row])
         elif row and not col:
             single_group = True
-            nrow = len(left[row])
+            nrow = _safe_len(left[row])
         elif not row and col:
             single_group = True
             nrow = 1
@@ -522,12 +529,8 @@ class LRFacetGrid(FacetGrid):
         if col:
             ncol = 0
             for data, group in zip([left, right], ['left', 'right']):
-                try:
-                    group_cols[group] = len(data[col])
-                    ncol += group_cols[group]
-                except KeyError:
-                    group_cols[group] = 1
-                    ncol += 1
+                group_cols[group] = _safe_len(data[col], 1)
+                ncol += group_cols[group]
         else:
             group_cols = 2
 
@@ -540,7 +543,7 @@ class LRFacetGrid(FacetGrid):
         if figsize is None:
             # Calculate the base figure size with extra horizontal space for a
             # colorbar
-            cbar_space = 1
+            cbar_space = 1.5
             figsize = (ncol * size * aspect + 2 * cbar_space, nrow * size)
 
         fig, axes = plt.subplots(nrow, ncol,
@@ -550,27 +553,37 @@ class LRFacetGrid(FacetGrid):
         # Set up the lists of names for the row and column facet variables
         name_dicts = np.empty(shape=(nrow, ncol), dtype=object)
 
-        row_names = list(left[row].values) if row else []
+        row_names = list(right[row].values) if row else []
         col_names = []
 
         offset = 0
         for data, group in zip([left, right], ['left', 'right']):
             if col in data:
-
-                group_col_names = list(data[col].values)
+                try:
+                    group_col_names = list(data[col].values)
+                except TypeError:
+                    group_col_names = [data.name]
             else:
                 group_col_names = [data.name]
             col_names.extend(group_col_names)
 
-            for i, row_name in enumerate(row_names):
+            if row_names:
+                for i, row_name in enumerate(row_names):
+                    for j, col_name in enumerate(group_col_names):
+                        ind = (i, j + offset)
+                        name_dicts[ind] = {}
+                        if col in data and col_name:
+                            name_dicts[ind][col] = col_name
+                        if row in data and row_name:
+                            name_dicts[ind][row] = row_name
+                offset += group_cols[group]
+            else:
                 for j, col_name in enumerate(group_col_names):
-                    ind = (i, j + offset)
+                    ind = (0, j + offset)
                     name_dicts[ind] = {}
                     if col in data:
                         name_dicts[ind][col] = col_name
-                    if row in data:
-                        name_dicts[ind][row] = row_name
-            offset += group_cols[group]
+                offset += group_cols[group]
 
         # Set up the class attributes
         # ---------------------------
@@ -585,6 +598,7 @@ class LRFacetGrid(FacetGrid):
         self.row_names = row_names
         self.col_names = col_names
         self.cbars = {}
+        self.title_template = "{coord} = {value}"
 
         # Next the private variables
         self._single_group = single_group
@@ -690,3 +704,13 @@ class LRFacetGrid(FacetGrid):
 
     def map(self, func, *args, **kwargs):
         NotImplementedError()
+
+
+def _safe_len(obj, default=1):
+    try:
+        return len(obj)
+    except:
+        try:
+            return len(default)
+        except:
+            return default
