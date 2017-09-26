@@ -1,6 +1,5 @@
 import os
 from collections import OrderedDict
-from distutils.version import LooseVersion
 import numpy as np
 
 from .. import DataArray
