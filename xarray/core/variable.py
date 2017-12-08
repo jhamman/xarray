@@ -186,6 +186,14 @@ def as_compatible_data(data, fastpath=False):
         else:
             data = np.asarray(data)
 
+    # if isinstance(data, dask_array_type):
+    #     import dask.array
+    #     if isinstance(data, dask.array.MaskedArray):
+    #         mask = dask.array.ma.getmaskarray(data)
+    #         dtype, fill_value = dtypes.maybe_promote(data.dtype)
+    #         data = dask.array.asarray(data, dtype=dtype)
+    #         data = dask.array.where(mask, fill_value, data)
+
     # validate whether the data is valid data types
     data = np.asarray(data)
 

@@ -22,7 +22,8 @@ from .common import AbstractArray, BaseDataObject
 from .coordinates import (DataArrayCoordinates, LevelCoordinatesSource,
                           Indexes)
 from .dataset import Dataset, merge_indexes, split_indexes
-from .pycompat import iteritems, basestring, OrderedDict, zip, range
+from .pycompat import (iteritems, basestring, OrderedDict, zip, range,
+                       dask_array_type)
 from .variable import (as_variable, Variable, as_compatible_data,
                        IndexVariable,
                        assert_unique_multiindex_level_names)
@@ -1334,22 +1335,29 @@ class DataArray(AbstractArray, BaseDataObject):
         index = self.coords.to_index()
         return pd.Series(self.values.reshape(-1), index=index, name=self.name)
 
-    def to_masked_array(self, copy=True):
-        """Convert this array into a numpy.ma.MaskedArray
+    def to_masked_array(self, **kwargs):
+        """Convert this array into a MaskedArray
+
+        The result is a Numpy.ma.MaskedArray when the data of this DataArray
+        is already a Numpy array. If the data in this DataArray is a
+        dask.array, a dask.array.ma.MaskedArray is returned. 
 
         Parameters
         ----------
-        copy : bool
-            If True (default) make a copy of the array in the result. If False,
-            a MaskedArray view of DataArray.values is returned.
+        **kwargs : dict
+            Additional keyword arguments passed on to ``masked_array``.
 
         Returns
         -------
         result : MaskedArray
             Masked where invalid values (nan or inf) occur.
         """
-        isnull = pd.isnull(self.values)
-        return np.ma.MaskedArray(data=self.values, mask=isnull, copy=copy)
+        mask = self.isnull()
+        if isinstance(self.data, dask_array_type):
+            from dask.array import ma
+        else:
+            from numpy import ma
+        return ma.masked_array(data=self.data, mask=mask.data, **kwargs)
 
     def to_netcdf(self, *args, **kwargs):
         """

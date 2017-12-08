@@ -2698,6 +2698,22 @@ class TestDataArray(TestCase):
         ma = da.to_masked_array()
         self.assertEqual(len(ma.mask), N)
 
+    @requires_dask
+    def test_to_dask_masked_array(self):
+        import dask.array
+
+        rs = np.random.RandomState(44)
+        x = rs.random_sample(size=(10, 20))
+        x_masked = np.ma.masked_where(x < 0.5, x)
+        da = DataArray(x_masked).chunk(chunks=5)
+
+        # Test round trip
+        x_masked_2 = da.to_masked_array()
+        assert isinstance(x_masked_2, dask.array.Array)
+        da_2 = DataArray(x_masked_2)
+        self.assertArrayEqual(x_masked, x_masked_2)
+        self.assertDataArrayEqual(da, da_2)
+
     def test_to_and_from_cdms2(self):
         pytest.importorskip('cdms2')
 
