@@ -25,13 +25,19 @@ Enhancements
   1D co-ordinate (e.g. time) and a 2D co-ordinate (e.g. depth as a function of
   time) (:issue:`1737`).
   By `Deepak Cherian <https://github.com/dcherian>`_.
-- Use ``pandas.Grouper`` class in xarray resample methods rather than the
-  deprecated ``pandas.TimeGrouper`` class (:issue:`1766`).
+- :py:meth:`~DataArray.to_masked_array` now returns a dask MaskedArray for
+  DataArrays containing dask arrays (:issue:`1769`). Requires dask 0.15.3 or
+  later.
   By `Joe Hamman <https://github.com/jhamman>`_.
-
 
 Bug fixes
 ~~~~~~~~~
+
+Miscelaneous
+~~~~~~~~~~~~
+- Use ``pandas.Grouper`` class in xarray resample methods rather than the
+  deprecated ``pandas.TimeGrouper`` class (:issue:`1766`).
+  By `Joe Hamman <https://github.com/jhamman>`_.
 
 .. _whats-new.0.10.0:
 
