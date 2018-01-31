@@ -13,6 +13,18 @@ What's New
     import xarray as xr
     np.random.seed(123456)
 
+.. _whats-new.0.11.0:
+
+v0.11.0 (unreleased)
+--------------------
+
+Breaking changes
+~~~~~~~~~~~~~~~~
+
+- Changes to minimum versions of dependencies:
+  - Xarray no longer support Python 3.4 (:issue: `1829`).
+    By `Joe Hamman <https://github.com/jhamman>`_.
+
 .. _whats-new.0.10.1:
 
 v0.10.1 (unreleased)
