@@ -25,13 +25,49 @@ What's New
   - `Python 3 Statement <http://www.python3statement.org/>`__
   - `Tips on porting to Python 3 <https://docs.python.org/3/howto/pyporting.html>`__
 
-.. _whats-new.0.10.8:
+.. _whats-new.0.10.9:
 
-v0.10.8 (unreleased)
+v0.10.9 (unreleased)
 --------------------
 
 Documentation
 ~~~~~~~~~~~~~
+
+Enhancements
+~~~~~~~~~~~~
+
+- DataArray coordinates and Dataset coordinates and data variables are
+  now displayed as `a b ... y z` rather than `a b c d ...`.
+  (:issue:`1186`)
+  By `Seth P <https://github.com/seth-p>`_.
+
+
+Bug fixes
+~~~~~~~~~
+
+- Fixed ``DataArray.to_iris()`` failure while creating ``DimCoord`` by 
+  falling back to creating ``AuxCoord``. Fixed dependency on ``var_name``
+  attribute being set.
+  (:issue:`2201`)
+  By `Thomas Voigt <https://github.com/tv3141>`_.
+
+.. _whats-new.0.10.8:
+
+v0.10.8 (18 July 2018)
+----------------------
+
+Breaking changes
+~~~~~~~~~~~~~~~~
+
+- Xarray no longer supports python 3.4. Additionally, the minimum supported
+  versions of the following dependencies has been updated and/or clarified:
+
+  - Pandas: 0.18 -> 0.19
+  - NumPy: 1.11 -> 1.12
+  - Dask: 0.9 -> 0.16
+  - Matplotlib: unspecified -> 1.5
+
+  (:issue:`2204`). By `Joe Hamman <https://github.com/jhamman>`_.
 
 Enhancements
 ~~~~~~~~~~~~
