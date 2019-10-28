@@ -8,39 +8,41 @@ from .common import AbstractWritableDataStore
 
 
 class InMemoryDataStore(AbstractWritableDataStore):
+    """Stores variables and attributes directly in OrderedDicts.
+
+    This store exists for internal testing purposes, e.g., for integration
+    tests with dask.array that will not need to write actual data to disk.
     """
-    Stores dimensions, variables and attributes in ordered dictionaries, making
-    this store fast compared to stores which save to disk.
-
-    This store exists purely for internal testing purposes.
-    """
-
-    def __init__(self, variables=None, attributes=None):
-        self._variables = OrderedDict() if variables is None else variables
-        self._attributes = OrderedDict() if attributes is None else attributes
-
-    def get_attrs(self):
-        return self._attributes
+    def __init__(self):
+        self._variables = OrderedDict()
+        self._attributes = OrderedDict()
+        # do we need locks? are writes to NumPy arrays thread-safe?
+        # this is a dumb but safe approach.
+        self._write_locks = defaultdict(threading.Lock)
 
     def get_variables(self):
         return self._variables
 
-    def get_dimensions(self):
-        dims = OrderedDict()
-        for v in self._variables.values():
-            for d, s in v.dims.items():
-                dims[d] = s
-        return dims
+    def get_attributes(self):
+        return self._attributes
 
-    def prepare_variable(self, k, v, *args, **kwargs):
-        new_var = Variable(v.dims, np.empty_like(v), v.attrs)
-        self._variables[k] = new_var
-        return new_var, v.data
+    def get_read_lock(self, name, region=Ellipsis):
+        return None
 
-    def set_attribute(self, k, v):
-        # copy to imitate writing to disk.
-        self._attributes[k] = copy.deepcopy(v)
+    def create_variable(self, name, variable, check_encoding=False):
+        if check_encoding and variable.encoding:
+            raise ValueError('encoding must be empty')
+        store_variable = Variable(variable.dims,
+                                  np.empty_like(variable),
+                                  copy.deepcopy(variable.attrs))
+        self._variables[name] = store_variable
+        return store_variable.values
 
-    def set_dimension(self, d, l, unlimited_dims=None):
-        # in this model, dimensions are accounted for in the variables
-        pass
+    def get_writable_array(self, name):
+        return self._variables[name].values
+
+    def set_attribute(self, name, value):
+        self._attributes[name] = copy.deepcopy(value)
+
+    def get_write_lock(self, name, region=Ellipsis):
+        return self._write_locks[name]

@@ -11,6 +11,7 @@ from ..conventions import cf_encoder
 from ..core import indexing
 from ..core.pycompat import dask_array_type
 from ..core.utils import FrozenOrderedDict, NdimSizeLenMixin
+from .locks import combine_locks
 
 # Create a logger object, but don't add any handlers. Leave that to user code.
 logger = logging.getLogger(__name__)
@@ -73,287 +74,192 @@ class BackendArray(NdimSizeLenMixin, indexing.ExplicitlyIndexed):
         return np.asarray(self[key], dtype=dtype)
 
 
-class AbstractDataStore(Mapping):
-
-    def __iter__(self):
-        return iter(self.variables)
-
-    def __getitem__(self, key):
-        return self.variables[key]
-
-    def __len__(self):
-        return len(self.variables)
-
-    def get_dimensions(self):  # pragma: no cover
-        raise NotImplementedError
-
-    def get_attrs(self):  # pragma: no cover
-        raise NotImplementedError
-
-    def get_variables(self):  # pragma: no cover
-        raise NotImplementedError
-
-    def get_encoding(self):
-        return {}
-
-    def load(self):
-        """
-        This loads the variables and attributes simultaneously.
-        A centralized loading function makes it easier to create
-        data stores that do automatic encoding/decoding.
-
-        For example::
-
-            class SuffixAppendingDataStore(AbstractDataStore):
-
-                def load(self):
-                    variables, attributes = AbstractDataStore.load(self)
-                    variables = {'%s_suffix' % k: v
-                                 for k, v in variables.items()}
-                    attributes = {'%s_suffix' % k: v
-                                  for k, v in attributes.items()}
-                    return variables, attributes
-
-        This function will be called anytime variables or attributes
-        are requested, so care should be taken to make sure its fast.
-        """
-        variables = FrozenOrderedDict((_decode_variable_name(k), v)
-                                      for k, v in self.get_variables().items())
-        attributes = FrozenOrderedDict(self.get_attrs())
-        return variables, attributes
-
-    @property
-    def variables(self):  # pragma: no cover
-        warnings.warn('The ``variables`` property has been deprecated and '
-                      'will be removed in xarray v0.11.',
-                      FutureWarning, stacklevel=2)
-        variables, _ = self.load()
-        return variables
-
-    @property
-    def attrs(self):  # pragma: no cover
-        warnings.warn('The ``attrs`` property has been deprecated and '
-                      'will be removed in xarray v0.11.',
-                      FutureWarning, stacklevel=2)
-        _, attrs = self.load()
-        return attrs
-
-    @property
-    def dimensions(self):  # pragma: no cover
-        warnings.warn('The ``dimensions`` property has been deprecated and '
-                      'will be removed in xarray v0.11.',
-                      FutureWarning, stacklevel=2)
-        return self.get_dimensions()
-
-    def close(self):
-        pass
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exception_type, exception_value, traceback):
-        self.close()
-
-
-class ArrayWriter:
-    def __init__(self, lock=None):
+class ArrayWriter(object):
+    def __init__(self):
         self.sources = []
         self.targets = []
-        self.regions = []
-        self.lock = lock
+        self.locks = []
 
-    def add(self, source, target, region=None):
+    def add(self, source, target, lock=None):
         if isinstance(source, dask_array_type):
             self.sources.append(source)
             self.targets.append(target)
-            self.regions.append(region)
+            self.locks.append(lock)
         else:
-            if region:
-                target[region] = source
-            else:
-                target[...] = source
+            target[...] = source
 
-    def sync(self, compute=True):
+    def sync(self):
         if self.sources:
             import dask.array as da
-            # TODO: consider wrapping targets with dask.delayed, if this makes
-            # for any discernable difference in perforance, e.g.,
-            # targets = [dask.delayed(t) for t in self.targets]
-
-            delayed_store = da.store(self.sources, self.targets,
-                                     lock=self.lock, compute=compute,
-                                     flush=True, regions=self.regions)
-            self.sources = []
-            self.targets = []
-            self.regions = []
-            return delayed_store
+            # TODO: dask.array.store needs to be able to accept a list of Lock
+            # objects. For now, using the CombinedLock approach
+            da.store(self.sources, self.targets,
+                     lock=combine_locks(self.locks))
 
 
-class AbstractWritableDataStore(AbstractDataStore):
+class AbstractDataStore(Mapping):
+    """An abstract interface for implementing datastores.
 
-    def encode(self, variables, attributes):
+    Every method is something that should potentially be implemented by
+    developers of new datastores.
+    """
+
+    def get_variables(self):
+        # type: (Any,) -> Mapping[Any, xarray.Variable]
+        """Return a map from names to xarray.Variable objects.
+
+        Consider returning Variables whose data is non-eagerly evaluated, e.g.,
+        by wrapping with xarray.core.utils.LazilyIndexedArray or
+        using dask.array.
+
+        # TODO: move xarray.core.utils.LazilyIndexedArray to public API.
         """
-        Encode the variables and attributes in this store
+        raise NotImplementedError
+
+    def get_attributes(self):
+        # type: () -> Mapping
+        """Return a map of global attributes on the DataStore."""
+        raise NotImplementedError
+
+    def close(self):
+        """Close any resources associated with this DataStore."""
+        pass
+
+    def get_read_lock(self, name, region=Ellipsis):
+        # type: (Hashable, Union[Ellipsis, Tuple[slice, ...]]) -> object
+        """Return a lock for reading a region of a given variable.
+
+        This method may be useful for DataStores that from which data is read in
+        parallel (e.g., with dask).
 
         Parameters
         ----------
-        variables : dict-like
-            Dictionary of key/value (variable name / xr.Variable) pairs
-        attributes : dict-like
-            Dictionary of key/value (attribute name / attribute) pairs
+        name : Hashable
+            Variable name.
+        region : Union[Ellipsis, Tuple[slice, ...]], optional
+            Region in the variable, e.g., valid key argument to `data[key]`,
+            for which to get a lock.
 
         Returns
         -------
-        variables : dict-like
-        attributes : dict-like
-
+        threading.Lock() ducktype (that is, an object with `acquire` and
+        `release` methods), or None, if no lock is necessary.
         """
-        variables = OrderedDict([(k, self.encode_variable(v))
-                                 for k, v in variables.items()])
-        attributes = OrderedDict([(k, self.encode_attribute(v))
-                                  for k, v in attributes.items()])
-        return variables, attributes
+        # Do we actually want the region argument?
+        # For a library such as HDF5, this will simply return a global lock for
+        # all files.
+        return None
 
-    def encode_variable(self, v):
-        """encode one variable"""
-        return v
+    def get_token(self):
+        """Return a token identifier suitable for use by dask."""
+        return str(uuid.uuid4())
 
-    def encode_attribute(self, a):
-        """encode one attribute"""
-        return a
+    def get_name(self):
+        """Return a user-friendly name for prefixing names of dask arrays.
 
-    def set_dimension(self, d, l):  # pragma: no cover
+        Not required to be unique.
+        """
+        return ''
+
+
+class OnDiskMixin(object):
+
+    def get_token(self):
+        return (self.filename, os.path.getmtime(self.filename))
+
+    def get_name(self):
+        return 'read-from-disk'
+
+
+class AbstractWritableDataStore(AbstractDataStore):
+    """An abstract interface for implementing writable datastores."""
+
+    def create_variable(self, name, variable, check_encoding=False):
+        # type: (Hashable, xarray.Variable) -> WritableDuckArray
+        """Create a new variable for writing into the DataStore.
+
+        This method is responsible for setting up a variable to write. It
+        SHOULD NOT actually write array values, but rather create an array to
+        which xarray itself will write.
+
+        If the given variable cannot be stored on the DataStore, this method
+        MUST raise an error.
+
+        Parameters
+        ----------
+        name : Hashable
+            Variable name. If a variable with this name already exists in the
+            DataStore, this method MAY raise an error.
+        variable : xarray.Variable
+            Variable to copy into the DataStore. `variable.encodings` provides
+            a dictionary of DataStore specific options for how to save
+            variables.
+        check_encoding : bool, optional
+            If True, this method SHOULD raise an error for any unexpected keys
+            or invalid values in `variable.encoding`.
+
+        Returns
+        -------
+        Array-like object that writes data to the store when assigning a NumPy
+        array to a tuple of slice objects, e.g., ``x[key] = value``, where
+        ``key`` has type ``Tuple[slice, ...]`` and length equal to the
+        dimensionality of the array, and ``value`` is a ``numpy.ndarray``.
+        """
         raise NotImplementedError
 
-    def set_attribute(self, k, v):  # pragma: no cover
+    def get_writable_array(self, name):
+        # type: (Hashable,) -> WritableDuckArray
+        """Return a writable array corresponding to an existing variable.
+
+        This method is only needed if you want the DataStore to support partial
+        writes, e.g., appending to existing variables.
+
+        Parameters
+        ----------
+        name : Hashable
+            Variable name. How to handle non-existing names is up to the
+            DataStore class. However, xarray will never call this method unless
+            a variable with the given name has already been verified to exist
+            as a member of the mapping returned by `get_variables()`.
+
+        Returns
+        -------
+        Writable array-like object, see `create_variable` for details.
+        """
+        # Note: this mostly exists for the benefit of future support for partial
+        # reads -- we don't actually make use of this in the current version of
+        # xarray.
         raise NotImplementedError
 
-    def set_variable(self, k, v):  # pragma: no cover
+    def set_attribute(self, name, value):
+        # type: (Hashable, Any) -> None
+        """Set a global attribute on the DataStore."""
         raise NotImplementedError
 
-    def store_dataset(self, dataset):
-        """
-        in stores, variables are all variables AND coordinates
-        in xarray.Dataset variables are variables NOT coordinates,
-        so here we pass the whole dataset in instead of doing
-        dataset.variables
-        """
-        self.store(dataset, dataset.attrs)
+    def sync(self):
+        """Synchronize writes to this DataStore."""
+        pass
 
-    def store(self, variables, attributes, check_encoding_set=frozenset(),
-              writer=None, unlimited_dims=None):
-        """
-        Top level method for putting data on this store, this method:
-          - encodes variables/attributes
-          - sets dimensions
-          - sets variables
+    def get_write_lock(self, name, region=Ellipsis):
+        # type: (Hashable, Union[Ellipsis, Tuple[slice, ...]]) -> object
+        """Return a lock for writing a given variable.
+
+        This method may be useful for DataStores that from which data is
+        written in parallel (e.g., with dask).
 
         Parameters
         ----------
-        variables : dict-like
-            Dictionary of key/value (variable name / xr.Variable) pairs
-        attributes : dict-like
-            Dictionary of key/value (attribute name / attribute) pairs
-        check_encoding_set : list-like
-            List of variables that should be checked for invalid encoding
-            values
-        writer : ArrayWriter
-        unlimited_dims : list-like
-            List of dimension names that should be treated as unlimited
-            dimensions.
+        name : Hashable
+            Variable name.
+        region : Union[Ellipsis, Tuple[slice, ...]], optional
+            Region in the variable, e.g., valid key argument to `data[key]`,
+            for which to get a lock.
+
+        Returns
+        -------
+        threading.Lock() ducktype (that is, an object with `acquire` and
+        `release` methods), or None, if no lock is necessary.
         """
-        if writer is None:
-            writer = ArrayWriter()
-
-        variables, attributes = self.encode(variables, attributes)
-
-        self.set_attributes(attributes)
-        self.set_dimensions(variables, unlimited_dims=unlimited_dims)
-        self.set_variables(variables, check_encoding_set, writer,
-                           unlimited_dims=unlimited_dims)
-
-    def set_attributes(self, attributes):
-        """
-        This provides a centralized method to set the dataset attributes on the
-        data store.
-
-        Parameters
-        ----------
-        attributes : dict-like
-            Dictionary of key/value (attribute name / attribute) pairs
-        """
-        for k, v in attributes.items():
-            self.set_attribute(k, v)
-
-    def set_variables(self, variables, check_encoding_set, writer,
-                      unlimited_dims=None):
-        """
-        This provides a centralized method to set the variables on the data
-        store.
-
-        Parameters
-        ----------
-        variables : dict-like
-            Dictionary of key/value (variable name / xr.Variable) pairs
-        check_encoding_set : list-like
-            List of variables that should be checked for invalid encoding
-            values
-        writer : ArrayWriter
-        unlimited_dims : list-like
-            List of dimension names that should be treated as unlimited
-            dimensions.
-        """
-
-        for vn, v in variables.items():
-            name = _encode_variable_name(vn)
-            check = vn in check_encoding_set
-            target, source = self.prepare_variable(
-                name, v, check, unlimited_dims=unlimited_dims)
-
-            writer.add(source, target)
-
-    def set_dimensions(self, variables, unlimited_dims=None):
-        """
-        This provides a centralized method to set the dimensions on the data
-        store.
-
-        Parameters
-        ----------
-        variables : dict-like
-            Dictionary of key/value (variable name / xr.Variable) pairs
-        unlimited_dims : list-like
-            List of dimension names that should be treated as unlimited
-            dimensions.
-        """
-        if unlimited_dims is None:
-            unlimited_dims = set()
-
-        existing_dims = self.get_dimensions()
-
-        dims = OrderedDict()
-        for v in unlimited_dims:  # put unlimited_dims first
-            dims[v] = None
-        for v in variables.values():
-            dims.update(dict(zip(v.dims, v.shape)))
-
-        for dim, length in dims.items():
-            if dim in existing_dims and length != existing_dims[dim]:
-                raise ValueError(
-                    "Unable to update size for existing dimension"
-                    "%r (%d != %d)" % (dim, length, existing_dims[dim]))
-            elif dim not in existing_dims:
-                is_unlimited = dim in unlimited_dims
-                self.set_dimension(dim, length, is_unlimited)
-
-
-class WritableCFDataStore(AbstractWritableDataStore):
-
-    def encode(self, variables, attributes):
-        # All NetCDF files get CF encoded by default, without this attempting
-        # to write times, for example, would fail.
-        variables, attributes = cf_encoder(variables, attributes)
-        variables = OrderedDict([(k, self.encode_variable(v))
-                                 for k, v in variables.items()])
-        attributes = OrderedDict([(k, self.encode_attribute(v))
-                                  for k, v in attributes.items()])
-        return variables, attributes
+        # Again, we actually have a use for the region argument? Could be useful
+        # to ensure writes to zarr are safe.
+        return None

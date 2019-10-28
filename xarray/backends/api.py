@@ -383,35 +383,6 @@ def open_dataset(filename_or_obj, group=None, decode_cf=True,
     if backend_kwargs is None:
         backend_kwargs = {}
 
-    def maybe_decode_store(store, lock=False):
-        ds = conventions.decode_cf(
-            store, mask_and_scale=mask_and_scale, decode_times=decode_times,
-            concat_characters=concat_characters, decode_coords=decode_coords,
-            drop_variables=drop_variables, use_cftime=use_cftime)
-
-        _protect_dataset_variables_inplace(ds, cache)
-
-        if chunks is not None:
-            from dask.base import tokenize
-            # if passed an actual file path, augment the token with
-            # the file modification time
-            if (isinstance(filename_or_obj, str) and
-                    not is_remote_uri(filename_or_obj)):
-                mtime = os.path.getmtime(filename_or_obj)
-            else:
-                mtime = None
-            token = tokenize(filename_or_obj, mtime, group, decode_cf,
-                             mask_and_scale, decode_times, concat_characters,
-                             decode_coords, engine, chunks, drop_variables,
-                             use_cftime)
-            name_prefix = 'open_dataset-%s' % token
-            ds2 = ds.chunk(chunks, name_prefix=name_prefix, token=token)
-            ds2._file_obj = ds._file_obj
-        else:
-            ds2 = ds
-
-        return ds2
-
     if isinstance(filename_or_obj, Path):
         filename_or_obj = str(filename_or_obj)
 
@@ -456,13 +427,12 @@ def open_dataset(filename_or_obj, group=None, decode_cf=True,
             store = backends.H5NetCDFStore(filename_or_obj, group=group,
                                            lock=lock, **backend_kwargs)
 
-    with close_on_error(store):
-        ds = maybe_decode_store(store)
+    ds = read_datastore(store, decode=conventions.cf_decoder,
+                        chunks=chunks, close_on_error=True)
 
     # Ensure source filename always stored in dataset object (GH issue #2550)
-    if 'source' not in ds.encoding:
-        if isinstance(filename_or_obj, str):
-            ds.encoding['source'] = filename_or_obj
+    if 'source' not in ds.encoding and isinstance(filename_or_obj, str):
+        ds.encoding['source'] = filename_or_obj
 
     return ds
 
@@ -1142,3 +1112,88 @@ def to_zarr(dataset, store=None, mode=None, synchronizer=None, group=None,
         return dask.delayed(_finalize_store)(writes, zstore)
 
     return zstore
+
+
+def read_datastore(store, decode=None, chunks=None, close_on_error=False):
+
+    # open_dataset now simply opens an appropriate store, creates a default
+    # CFDecoder, and passes the arguments off to read_datastore.
+
+    if decode is None:
+        decode = conventions.cf_decoder
+
+    try:
+        variables = store.get_variables()
+        attrs = store.get_attributes()
+        dataset = decode(variables, attrs)
+
+        if chunks is not None:
+            try:
+                from dask.base import tokenize
+            except ImportError:
+                import dask  # raise the usual error if dask is entirely missing
+
+            lock = {k: store.get_lock(k) for k in variables}
+            token = tokenize(store.get_token(), pickle.dumps(decoder))
+            prefix = store.get_name() + '/'
+            dataset2 = dataset.chunk(
+                chunks, name_prefix=prefix, token=token, lock=lock)
+            dataset2._file_obj = store
+        else:
+            dataset2 = dataset
+
+    except Exception:
+        # This exists for the sake of testing (especially on Windows, where
+        # unclosed files lead to errors)
+        if close_on_error:
+            store.close()
+
+    return dataset2
+
+
+# write_datastore also becomes developer facing API. Dataset.dump_to_store
+# and the various other machinery is deprecated.
+
+def write_datastore(dataset, store, encode=None, encoding=None,
+                    close_on_error=False):
+    # TODO: add compute keyword argument to allow for returning futures, like
+    # dask.array.store.
+    # TODO: add support for writing to regions of variables (using
+    # store.get_writable_array)
+
+    # to_netcdf now simply opens an appropriate store, creates a default
+    # CFEncoder, and passes the arguments off to write_datastore.
+
+    if encode is None:
+        encode = DummyEncoder()
+
+    if encoding is None:
+        encoding = {}
+
+    if encoding:
+        # shallow copy variables so we can overwrite encoding
+        dataset = dataset.copy(deep=False)
+        for name, var_encoding in encoding.items():
+            dataset.variables[name].encoding = var_encoding
+
+    variables, attrs = encode(dataset)
+
+    try:
+        for k, v in attrs.item():
+            store.set_attribute(k, v)
+
+        writer = ArrayWriter()
+        for name, variable in variables.items():
+            check = name in encoding
+            target, source = store.create_variable(name, variable, check)
+            lock = store.get_write_lock(name)
+            writer.add(source, target, lock)
+        writer.sync()
+
+    except Exception:
+        if close_on_error:
+            store.sync()
+            store.close()
+    else:
+        store.sync()
+        store.close()
