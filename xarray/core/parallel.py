@@ -55,6 +55,60 @@ def check_result_variables(
         )
 
 
+def subset_dataset_to_chunk(graph, gname, dataset, input_chunks, chunk_tuple):
+
+    # mapping from dimension name to chunk index
+    input_chunk_index = dict(zip(input_chunks.keys(), chunk_tuple))
+
+    # mapping from chunk index to slice bounds
+    chunk_index_bounds = {
+        dim: np.cumsum((0,) + chunks_v) for dim, chunks_v in input_chunks.items()
+    }
+
+    # this will become [[name1, variable1],
+    #                   [name2, variable2],
+    #                   ...]
+    # which is passed to dict and then to Dataset
+    data_vars = []
+    coords = []
+
+    for name, variable in dataset.variables.items():
+        # make a task that creates tuple of (dims, chunk)
+        if dask.is_dask_collection(variable.data):
+            # recursively index into dask_keys nested list to get chunk
+            chunk = variable.__dask_keys__()
+            for dim in variable.dims:
+                chunk = chunk[input_chunk_index[dim]]
+
+            chunk_variable_task = (f"{gname}-{name}-{chunk[0]}",) + chunk_tuple
+            graph[chunk_variable_task] = (tuple, [variable.dims, chunk, variable.attrs])
+        else:
+            # non-dask array with possibly chunked dimensions
+            # index into variable appropriately
+            subsetter = {}
+            for dim in variable.dims:
+                if dim in input_chunk_index:
+                    which_chunk = input_chunk_index[dim]
+                    subsetter[dim] = slice(
+                        chunk_index_bounds[dim][which_chunk],
+                        chunk_index_bounds[dim][which_chunk + 1],
+                    )
+
+            subset = variable.isel(subsetter)
+            chunk_variable_task = (
+                "{}-{}".format(gname, dask.base.tokenize(subset)),
+            ) + chunk_tuple
+            graph[chunk_variable_task] = (tuple, [subset.dims, subset, subset.attrs])
+
+        # this task creates dict mapping variable name to above tuple
+        if name in dataset._coord_names:
+            coords.append([name, chunk_variable_task])
+        else:
+            data_vars.append([name, chunk_variable_task])
+
+    return (Dataset, (dict, data_vars), (dict, coords), dataset.attrs)
+
+
 def dataset_to_dataarray(obj: Dataset) -> DataArray:
     if not isinstance(obj, Dataset):
         raise TypeError("Expected Dataset, got %s" % type(obj))
@@ -338,61 +392,16 @@ def map_blocks(
 
     # map dims to list of chunk indexes
     ichunk = {dim: range(len(chunks_v)) for dim, chunks_v in input_chunks.items()}
-    # mapping from chunk index to slice bounds
-    chunk_index_bounds = {
-        dim: np.cumsum((0,) + chunks_v) for dim, chunks_v in input_chunks.items()
-    }
 
     # iterate over all possible chunk combinations
-    for v in itertools.product(*ichunk.values()):
-        input_chunk_index = dict(zip(dataset.dims, v))
+    for chunk_tuple in itertools.product(*ichunk.values()):
+        # mapping from dimension name to chunk index
+        input_chunk_index = dict(zip(input_chunks.keys(), chunk_tuple))
 
-        # this will become [[name1, variable1],
-        #                   [name2, variable2],
-        #                   ...]
-        # which is passed to dict and then to Dataset
-        data_vars = []
-        coords = []
-
-        for name, variable in dataset.variables.items():
-            # make a task that creates tuple of (dims, chunk)
-            if dask.is_dask_collection(variable.data):
-                # recursively index into dask_keys nested list to get chunk
-                chunk = variable.__dask_keys__()
-                for dim in variable.dims:
-                    chunk = chunk[input_chunk_index[dim]]
-
-                chunk_variable_task = (f"{gname}-{name}-{chunk[0]}",) + v
-                graph[chunk_variable_task] = (
-                    tuple,
-                    [variable.dims, chunk, variable.attrs],
-                )
-            else:
-                # non-dask array with possibly chunked dimensions
-                # index into variable appropriately
-                subsetter = {}
-                for dim in variable.dims:
-                    if dim in input_chunk_index:
-                        which_chunk = input_chunk_index[dim]
-                        subsetter[dim] = slice(
-                            chunk_index_bounds[dim][which_chunk],
-                            chunk_index_bounds[dim][which_chunk + 1],
-                        )
-
-                subset = variable.isel(subsetter)
-                chunk_variable_task = (
-                    "{}-{}".format(gname, dask.base.tokenize(subset)),
-                ) + v
-                graph[chunk_variable_task] = (
-                    tuple,
-                    [subset.dims, subset, subset.attrs],
-                )
-
-            # this task creates dict mapping variable name to above tuple
-            if name in dataset._coord_names:
-                coords.append([name, chunk_variable_task])
-            else:
-                data_vars.append([name, chunk_variable_task])
+        # make a Dataset creation task for one block
+        dataset_chunk_task = subset_dataset_to_chunk(
+            graph, gname, dataset, input_chunks, chunk_tuple
+        )
 
         # expected["shapes", "coords", "data_vars"] are used to raise nice error messages in _wrapper
         expected = {}
@@ -406,11 +415,11 @@ def map_blocks(
         expected["data_vars"] = set(template.data_vars.keys())  # type: ignore
         expected["coords"] = set(template.coords.keys())  # type: ignore
 
-        from_wrapper = (gname,) + v
+        from_wrapper = (gname,) + chunk_tuple
         graph[from_wrapper] = (
             _wrapper,
             func,
-            (Dataset, (dict, data_vars), (dict, coords), dataset.attrs),
+            dataset_chunk_task,
             input_is_array,
             args,
             kwargs,
