@@ -388,7 +388,7 @@ def map_blocks(
         if isinstance(template, DataArray):
             output_chunks = dict(zip(template.dims, template.chunks))  # type: ignore
         else:
-            output_chunks = template.chunks  # type: ignore
+            output_chunks = dict(template.chunks)
 
     if isinstance(template, DataArray):
         result_is_array = True
