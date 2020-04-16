@@ -1039,7 +1039,7 @@ def test_map_blocks_error(map_da, map_ds):
     def bad_func(darray):
         return (darray * darray.x + 5 * darray.y)[:1, :1]
 
-    with raises_regex(ValueError, "Length of the.* has changed."):
+    with raises_regex(ValueError, "Received dimension 'x' of length 1"):
         xr.map_blocks(bad_func, map_da).compute()
 
     def returns_numpy(darray):
@@ -1150,7 +1150,7 @@ def test_map_blocks_to_array(map_ds):
         lambda x: x.expand_dims(k=3),
         lambda x: x.assign_coords(new_coord=("y", x.y * 2)),
         lambda x: x.astype(np.int32),
-        # TODO: [lambda x: x.isel(x=1).drop_vars("x"), map_da],
+        lambda x: x.x,
     ],
 )
 def test_map_blocks_da_transformations(func, map_da):
@@ -1170,7 +1170,7 @@ def test_map_blocks_da_transformations(func, map_da):
         lambda x: x.expand_dims(k=[1, 2, 3]),
         lambda x: x.expand_dims(k=3),
         lambda x: x.rename({"a": "new1", "b": "new2"}),
-        # TODO: [lambda x: x.isel(x=1)],
+        lambda x: x.x,
     ],
 )
 def test_map_blocks_ds_transformations(func, map_ds):
@@ -1178,6 +1178,36 @@ def test_map_blocks_ds_transformations(func, map_ds):
         actual = xr.map_blocks(func, map_ds)
 
     assert_identical(actual, func(map_ds))
+
+
+@pytest.mark.parametrize("obj", [make_da(), make_ds()])
+def test_map_blocks_da_ds_with_template(obj):
+    func = lambda x: x.isel(x=[1])
+    template = obj.isel(x=[1, 5, 9])
+    with raise_if_dask_computes():
+        actual = xr.map_blocks(func, obj, template=template)
+    assert_identical(actual, template)
+
+    with raise_if_dask_computes():
+        actual = obj.map_blocks(func, template=template)
+    assert_identical(actual, template)
+
+
+@pytest.mark.parametrize("obj", [make_da(), make_ds()])
+def test_map_blocks_errors_bad_template(obj):
+    with raises_regex(ValueError, "unexpected coordinate variables"):
+        xr.map_blocks(lambda x: x.assign_coords(a=10), obj, template=obj).compute()
+    with raises_regex(ValueError, "does not contain coordinate variables"):
+        xr.map_blocks(lambda x: x.drop_vars("cxy"), obj, template=obj).compute()
+    with raises_regex(ValueError, "Dimensions {'x'} missing"):
+        xr.map_blocks(lambda x: x.isel(x=1), obj, template=obj).compute()
+    with raises_regex(ValueError, "Received dimension 'x' of length 1"):
+        xr.map_blocks(lambda x: x.isel(x=[1]), obj, template=obj).compute()
+
+
+def test_map_blocks_errors_bad_template_2(map_ds):
+    with raises_regex(ValueError, "unexpected data variables {'xyz'}"):
+        xr.map_blocks(lambda x: x.assign(xyz=1), map_ds, template=map_ds).compute()
 
 
 @pytest.mark.parametrize("obj", [make_da(), make_ds()])
